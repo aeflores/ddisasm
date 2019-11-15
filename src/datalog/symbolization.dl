@@ -94,6 +94,16 @@ This module also computes and symbol_minus_symbol.
 .decl string(ea:address,end:address)
 .output string
 
+.decl heuristic_weight(Name:symbol,Weight:number)
+.decl default_heuristic_weight(Name:symbol,Weight:number)
+.decl user_heuristic_weight(Name:symbol,Weight:number)
+.input user_heuristic_weight
+
+heuristic_weight(Name,Weight):-
+    user_heuristic_weight(Name,Weight).
+heuristic_weight(Name,Weight):-
+    !user_heuristic_weight(Name,_),
+    default_heuristic_weight(Name,Weight).
 ////////////////////////////////////////////////////////////////////////////////////
 // candidates of symbolic values in the code
 
@@ -158,57 +168,73 @@ symbolic_operand_candidate(EA,Op_index,Dest,Type):-
 /////////////////////////////////////////////////////////////////
 /// Final decision on symbolization of operands
 
-symbolic_operand_point(EA,Index,0,"operand bias"):-
-    symbolic_operand_candidate(EA,Index,_,_).
+default_heuristic_weight("operand bias",0).
+default_heuristic_weight("operand has relocation",10).
+default_heuristic_weight("compared to non-address",-1).
+default_heuristic_weight("immediate is bitmask",-1).
+default_heuristic_weight("operand point-to-exception-section",-2).
+default_heuristic_weight("operated on logical operation result",-1).
+default_heuristic_weight("moved/compared with different size",-1).
+default_heuristic_weight("used-for-address",1).
+
+symbolic_operand_point(EA,Index,Points,"operand bias"):-
+    symbolic_operand_candidate(EA,Index,_,_),
+    heuristic_weight("operand bias",Points).
 
 // no decision needs to be made with pie code
-symbolic_operand_point(EA,Index,10,"pie code"):-
+symbolic_operand_point(EA,Index,Points,"operand has relocation"):-
     !binary_type("EXEC"),
-    symbolic_operand_candidate(EA,Index,_,_).
+    symbolic_operand_candidate(EA,Index,_,_),
+    heuristic_weight("operand has relocation",Points).
 
-symbolic_operand_point(EA,Imm_index,-1,"compared to non-address"):-
+symbolic_operand_point(EA,Imm_index,Points,"compared to non-address"):-
     cmp_immediate_to_reg(EA,Reg,Imm_index,_),
     def_used(EA_def,Reg,EA,_),
     def_used(EA_def,Reg,EA2,_), EA2 != EA,
     cmp_immediate_to_reg(EA2,Reg,Imm_index2,_),
-    !symbolic_operand_candidate(EA2,Imm_index2,_,_).
+    !symbolic_operand_candidate(EA2,Imm_index2,_,_),
+    heuristic_weight("compared to non-address",Points).
 
-symbolic_operand_point(EA,Imm_index,-1,"immediate is bitmask"):-
+symbolic_operand_point(EA,Imm_index,Points,"immediate is bitmask"):-
     symbolic_operand_candidate(EA,Imm_index,_,_),
     instruction_get_op(EA,Imm_index,Op),
     op_immediate(Op,_),
     instruction_get_operation(EA,Operation),
-    arch.logic_operation(Operation).
+    arch.logic_operation(Operation),
+    heuristic_weight("immediate is bitmask",Points).
 
-symbolic_operand_point(EA,Imm_index,-2,"point to exception section"):-
+symbolic_operand_point(EA,Imm_index,Points,"operand point-to-exception-section"):-
     symbolic_operand_candidate(EA,Imm_index,Dest,_),
     exception_section(Name),
     section(Name,SectSize,Base),
-    Base <= Dest, Dest < Base+SectSize.
+    Base <= Dest, Dest < Base+SectSize,
+    heuristic_weight("operand point-to-exception-section",Points).
 
- symbolic_operand_point(EA,Imm_index,-1,"operated on logical operation result"):-
+ symbolic_operand_point(EA,Imm_index,Points,"operated on logical operation result"):-
     op_immediate_and_reg(EA,_,Reg,Imm_index,_),
     def_used(EA_def,Reg,EA,_),
     instruction_get_operation(EA_def,Operation),
     arch.logic_operation(Operation),
     !low_pass_filter(EA_def),
-    !is_xor_reset(EA_def).
+    !is_xor_reset(EA_def),
+    heuristic_weight("operated on logical operation result",Points).
 
-symbolic_operand_point(EA,Op_index,-1,"moved/compared-with-different-size"):-
+symbolic_operand_point(EA,Op_index,Points,"moved/compared with different size"):-
     symbolic_operand_candidate(EA,Op_index,_,_),
     instruction_get_op(EA,Op_index,Op),
     op_immediate(Op,_),
     instruction_get_op(EA,_,Op2),
     op_indirect(Op2,_,_,_,_,_,Size),
     arch.pointer_size(Pt_size),
-    Size/8 < Pt_size.
+    Size/8 < Pt_size,
+    heuristic_weight("moved/compared with different size",Points).
 
-
-symbolic_operand_point(EA,Op_index,1,"used-for-address"):-
+symbolic_operand_point(EA,Op_index,Points,"used-for-address"):-
     symbolic_operand_candidate(EA,Op_index,_,_),
     instruction_get_op(EA,Op_index,Op),
     op_immediate(Op,_),
-    def_used_for_address(EA,_).
+    def_used_for_address(EA,_),
+    heuristic_weight("used-for-address",Points).
 
 symbolic_operand_total_points(EA,Operand,Points):-
     symbolic_operand_candidate(EA,Operand,_,_),
@@ -460,27 +486,48 @@ address_array_range.in_ea(EA):-
 //////////////////////////////////////////////////////////////////////////////////
 // Final decision on symbolization of data
 
-data_object_point(EA,Pt_size,Type,-2,"data object bias"):-
-    data_object_candidate(EA,Pt_size,Type).
+default_heuristic_weight("pointer array",3).
+default_heuristic_weight("data object bias",-2).
+default_heuristic_weight("quad symbol-symbol",5).
+default_heuristic_weight("symbol-symbol",4).
+default_heuristic_weight("pointed by pointer array",2).
+default_heuristic_weight("symbol data access",5).
+default_heuristic_weight("multiple conflict",-2).
+default_heuristic_weight("no label conflicts",1).
+default_heuristic_weight("aligned",2).
+default_heuristic_weight("point-to-exception-section",-2).
+default_heuristic_weight("point-to-special-section",-1).
+default_heuristic_weight("data has relocation",10).
+default_heuristic_weight("string basic point",2).
+default_heuristic_weight("long string",3).
+default_heuristic_weight("string in jump table",-2).
+default_heuristic_weight("data access",4).
+default_heuristic_weight("data access xmm",1).
 
-data_object_point(EA,8,"symbol-symbol",5,"quad symbol-symbol"):-
-    data_object_candidate(EA,8,"symbol-symbol").
+data_object_point(EA,Pt_size,Type,Points,"data object bias"):-
+    data_object_candidate(EA,Pt_size,Type),
+    heuristic_weight("data object bias",Points).
 
-data_object_point(EA,Size,"symbol-symbol",4,"symbol-symbol"):-
+data_object_point(EA,8,"symbol-symbol",Points,"quad symbol-symbol"):-
+    data_object_candidate(EA,8,"symbol-symbol"),
+    heuristic_weight("quad symbol-symbol",Points).
+
+data_object_point(EA,Size,"symbol-symbol",Points,"symbol-symbol"):-
     data_object_candidate(EA,Size,"symbol-symbol"),
-    Size <= 4.
+    Size <= 4,
+    heuristic_weight("symbol-symbol",Points).
 
 // Pointer array heuristic
-data_object_point(EA,Pt_size,"symbol",3,"pointer array"):-
+data_object_point(EA,Pt_size,"symbol",Points,"pointer array"):-
     data_object_candidate(EA,Pt_size,"symbol"),
-    address_array(EA,_,_).
+    address_array(EA,_,_),
+    heuristic_weight("pointer array",Points).
 
-// a pointer array should point to elements of the same type
-// the pointed elements get points if they are all the same type
-data_object_point(EA,Size,Type,2,"pointed by pointer array"),
-data_object_point(EA2,Size2,Type,2,"pointed by pointer array"),
-data_object_point(EA3,Size3,Type,2,"pointed by pointer array"),
-data_object_point(EA4,Size4,Type,2,"pointed by pointer array"):-
+// a pointer array should point to the same type
+data_object_point(EA,Size,Type,Points,"pointed by pointer array"),
+data_object_point(EA2,Size2,Type,Points,"pointed by pointer array"),
+data_object_point(EA3,Size3,Type,Points,"pointed by pointer array"),
+data_object_point(EA4,Size4,Type,Points,"pointed by pointer array"):-
     address_array(EA_array,Distance,InitialEA),
     address_in_data(EA_array,EA),
     data_object_candidate(EA,Size,Type),
@@ -495,24 +542,29 @@ data_object_point(EA4,Size4,Type,2,"pointed by pointer array"):-
 
     address_array(EA_array+3*Distance,Distance,InitialEA),
     address_in_data(EA_array+3*Distance,EA4),
-    data_object_candidate(EA4,Size4,Type).
+    data_object_candidate(EA4,Size4,Type),
+
+    heuristic_weight("pointed by pointer array",Points).
 
 // data access heuristic
-data_object_point(EA,Pt_size,"symbol",5,"data access"):-
+data_object_point(EA,Pt_size,"symbol",Points,"symbol data access"):-
     data_object_candidate(EA,Pt_size,"symbol"),
     preferred_data_access(EA,Label),
     (
         data_access_pattern(Label,Pt_size,_,_);
         data_access_pattern(Label,0,_,_)
-    ).
+    ),
+    heuristic_weight("symbol data access",Points).
+
 // if we conflict with several other candidates we reduce the points
-data_object_point(EA,Pt_size,"symbol",-2,"multiple conflict"):-
+data_object_point(EA,Pt_size,"symbol",Points,"multiple conflict"):-
     data_object_candidate(EA,Pt_size,"symbol"),
     data_object_conflict(EA,Pt_size,"symbol",EA2,_,"other"),
     data_object_conflict(EA,Pt_size,"symbol",EA3,_,"other"),
-    EA2 != EA3.
+    EA2 != EA3,
+    heuristic_weight("multiple conflict",Points).
 
-data_object_point(EA,Pt_size,"symbol",1,"no label conflicts"):-
+data_object_point(EA,Pt_size,"symbol",Points,"no label conflicts"):-
     data_object_candidate(EA,Pt_size,"symbol"),
     labeled_data_candidate(EA),
     !labeled_data_candidate(EA+1),
@@ -521,54 +573,64 @@ data_object_point(EA,Pt_size,"symbol",1,"no label conflicts"):-
     !labeled_data_candidate(EA+4),
     !labeled_data_candidate(EA+5),
     !labeled_data_candidate(EA+6),
-    !labeled_data_candidate(EA+7).
+    !labeled_data_candidate(EA+7),
+    heuristic_weight("no label conflicts",Points).
 
-data_object_point(EA,Pt_size,"symbol",2,"aligned"):-
+data_object_point(EA,Pt_size,"symbol",Points,"aligned"):-
     data_object_candidate(EA,Pt_size,"symbol"),
-    EA % Pt_size = 0.
+    EA % Pt_size = 0,
+    heuristic_weight("aligned",Points).
 
-data_object_point(EA,Pt_size,"symbol",-2,"point-to-exception-section"):-
+data_object_point(EA,Pt_size,"symbol",Points,"point-to-exception-section"):-
     data_object_candidate(EA,Pt_size,"symbol"),
     address_in_data_refined(EA,Dest),
     exception_section(Name),
     section(Name,SectSize,Base),
-    Dest >= Base, Dest < Base+SectSize.
+    Dest >= Base, Dest < Base+SectSize,
+    heuristic_weight("point-to-exception-section",Points).
 
-data_object_point(EA,Pt_size,"symbol",-1,"point-to-special-section"):-
+data_object_point(EA,Pt_size,"symbol",Points,"point-to-special-section"):-
     data_object_candidate(EA,Pt_size,"symbol"),
     address_in_data_refined(EA,Dest),
     special_data_section(Name),
     section(Name,SectSize,Base),
-    Dest >= Base, Dest < Base+SectSize.
+    Dest >= Base, Dest < Base+SectSize,
+    heuristic_weight("point-to-special-section",Points).
 
 
-data_object_point(EA,Pt_size,"symbol",10,"has relocation"):-
+data_object_point(EA,Pt_size,"symbol",Points,"data has relocation"):-
     !binary_type("EXEC"),
     data_object_candidate(EA,Pt_size,"symbol"),
-    relocation(EA,_,_,_).
+    relocation(EA,_,_,_),
+    heuristic_weight("data has relocation",Points).
 
 //extra point if the string is long
-data_object_point(EA,Size,"string",2,"string basic point"):-
+data_object_point(EA,Size,"string",Points,"string basic point"):-
+    heuristic_weight("string basic point",Points),
     data_object_candidate(EA,Size,"string").
 
-data_object_point(EA,Size,"string",3,"long string"):-
+data_object_point(EA,Size,"string",Points,"long string"):-
     data_object_candidate(EA,Size,"string"),
-    Size > 5.
+    Size > 5,
+    heuristic_weight("long string",Points).
 
-data_object_point(EA,Size,"string",-2,"string in jump table"):-
+data_object_point(EA,Size,"string",Points,"string in jump table"):-
     data_object_candidate(EA,Size,"string"),
     preferred_data_access(EA,EA_ref),
-    jump_table_start(_,_,EA_ref,_,_).
+    jump_table_start(_,_,EA_ref,_,_),
+    heuristic_weight("string in jump table",Points).
 
 // data access negative heuristic
-data_object_point(EA,Size,"other",4,"data access"):-
-  data_object_candidate(EA,Size,"other"),
-    Size < 16.
+data_object_point(EA,Size,"other",Points,"data access"):-
+    data_object_candidate(EA,Size,"other"),
+    Size < 16,
+    heuristic_weight("data access",Points).
 
 //sometimes we load pointers into xmm
-data_object_point(EA,Size,"other",1,"data access xmm"):-
-  data_object_candidate(EA,Size,"other"),
-    Size >= 16.
+data_object_point(EA,Size,"other",Points,"data access xmm"):-
+    data_object_candidate(EA,Size,"other"),
+    Size >= 16,
+    heuristic_weight("data access xmm",Points).
 
 //range mismatch
 data_object_conflict(EA,Size,Type,EA2,Size2,Type2):-

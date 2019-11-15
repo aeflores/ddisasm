@@ -51,6 +51,24 @@ namespace std
     }
 } // namespace std
 
+void loadWeights(souffle::SouffleProgram *Prog, const std::string &FileName)
+{
+    std::fstream File;
+    File.open(FileName, std::ios::in);
+    std::string Row;
+    auto *WeightsRel = Prog->getRelation("user_heuristic_weight");
+    while(std::getline(File, Row))
+    {
+        std::stringstream s(Row);
+        std::string Name, Weight;
+        std::getline(s, Name, ',');
+        std::getline(s, Weight, ',');
+        souffle::tuple T(WeightsRel);
+        T << Name << std::stoi(Weight);
+        WeightsRel->insert(T);
+    }
+}
+
 int main(int argc, char **argv)
 {
     po::options_description desc("Allowed options");
@@ -62,6 +80,8 @@ int main(int argc, char **argv)
         ("debug", "generate assembler file with debugging information") //
         ("debug-dir", po::value<std::string>(),                         //
          "location to write CSV files for debugging")                   //
+        ("weights", po::value<std::string>(),
+         "File with user-defined weights for the heuristics") //
         ("input-file", po::value<std::string>(), "file to disasemble")(
             "keep-functions,K",
             boost::program_options::value<std::vector<std::string>>()->multitoken(),
@@ -120,6 +140,11 @@ int main(int argc, char **argv)
     }
     if(prog)
     {
+        if(vm.count("weights") != 0)
+        {
+            loadWeights(prog, vm["weights"].as<std::string>());
+        }
+
         std::cout << "Disassembling" << std::endl;
         try
         {
